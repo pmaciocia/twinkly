@@ -32,10 +32,10 @@ class Point:
     def dist(self, pos):
         itensity = 255 * max(0, 1 - dist(int(self.pos), pos)/self.size)
 
-        r = int(itensity * self.r) % 255
-        g = int(itensity * self.g) % 255
-        b = int(itensity * self.b) % 255
-        w = int(itensity * self.w) % 255
+        r = int(itensity * self.r)
+        g = int(itensity * self.g)
+        b = int(itensity * self.b)
+        w = int(itensity * self.w)
 
         return (r,g,b,w)
 
@@ -80,7 +80,7 @@ def gen_frame():
                 output.seek(pos)
 
                 r,g,b,w = tuple(map(sum, zip(*(p.dist(iy) for p in points))))
-                val = struct.pack(">BBBB", w, r, g, b)
+                val = struct.pack(">BBBB", w%255, r%255, g%255, b%255)
                 output.write(val)
 
             yield output
