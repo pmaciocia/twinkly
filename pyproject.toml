@@ -1,0 +1,11 @@
+[project]
+name = "xmas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "colorist>=1.8.8",
+    "urllib3>=2.6.1",
+    "xled>=0.7.0",
+]

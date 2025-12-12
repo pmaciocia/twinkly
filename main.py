@@ -1,76 +1,120 @@
 
+import random
 import xled
 import time
 import io
 import struct
 import signal
-from dataclasses import dataclass
+import uuid
+import os
+from colorist import ColorRGB
+from points import random_point, random_grower
 
 ip = '192.168.1.44'
 hw = 'e8:31:cd:6d:8e:7d'
-layout = list(range(125, 251)) + list(range(125,-1,-1))
+default_layout = list(range(125, 250)) + list(range(124,-1,-1))
 
 on = struct.pack(">BBBB", 255, 255, 255, 255)
-red = struct.pack(">BBBB", 0, 255, 0, 0)
-green = struct.pack(">BBBB", 0, 0, 255, 0)
-blue = struct.pack(">BBBB", 0, 0, 0, 255)
 off = struct.pack(">BBBB", 0, 0, 0, 0)
 
-@dataclass
-class Point:
-    pos: float
-    speed: float
-    size: float
-    r: float
-    g: float
-    b: float
-    w: float
+# rainbow colors
+rainbow_colors = [
+    struct.pack(">BBBB", 0, 255, 0, 0),     # Red
+    struct.pack(">BBBB", 0, 255, 127, 0),   # Orange
+    struct.pack(">BBBB", 0, 255, 255, 0),   # Yellow
+    struct.pack(">BBBB", 0, 0, 255, 0),     # Green
+    struct.pack(">BBBB", 0, 0, 0, 255),     # Blue
+    struct.pack(">BBBB", 0, 75, 0, 130),    # Indigo
+    struct.pack(">BBBB", 0, 148, 0, 211)    # Violet
+]
 
-    def update(self):
-        self.pos = (self.pos + self.speed) % 250
-    
-    def dist(self, pos):
-        itensity = 255 * max(0, 1 - dist(int(self.pos), pos)/self.size)
+rainbow_rgb = [
+    (255, 0, 0),     # Red
+    (255, 127, 0),   # Orange
+    (255, 255, 0),   # Yellow
+    (0, 255, 0),     # Green
+    (0, 0, 255),     # Blue
+    (75, 0, 130),    # Indigo
+    (148, 0, 211)    # Violet
+]
 
-        r = int(itensity * self.r)
-        g = int(itensity * self.g)
-        b = int(itensity * self.b)
-        w = int(itensity * self.w)
+def create_movie(d: xled.ControlInterface, frames: int, fps: int, name: str, uid: str = None, gen = None):
+    if uid is None:
+        uid = str(uuid.uuid4()).upper()
 
-        return (r,g,b,w)
+    if gen is None:
+        gen = gen_frame(default_layout)
 
-def main():
-    d = xled.ControlInterface(ip, hw)
+    with io.BytesIO() as output:
+        count = 0
+        frame = next(gen)
+        while frame is not None and count < frames:
+            val = frame.getvalue()
+            output.write(val)
+            count += 1
+            frame = next(gen, None)
+        
+        output.seek(0)
+
+        d.set_mode("off")
+        r = d.set_movies_new(name, uid, "rgbw_raw", 250, count, fps)
+        print(r.data)
+        r = d.set_movies_full(output)
+        print(r)
+
+        movies = d.get_movies().data["movies"]
+        new_movie = list((m for m in movies if m["unique_id"] == uid))[0]
+        d.set_movies_current(new_movie["id"])
+        d.set_mode("movie")
+
+def run_movie(d: xled.ControlInterface, gen):
     d.set_mode("rt")
 
-    signal.signal(signal.SIGINT, lambda s, f: interrupt_handler(s, f, d))
-    for frame in gen_frame():
+    for frame in gen:
         d.set_rt_frame_socket(version=3,frame=frame)
-        time.sleep(0.1)
+        print_tree(frame)
+        time.sleep(0.2)
 
     d.set_mode("off")
 
-def interrupt_handler(signal, frame, device):
-    print("Interrupted")
+
+def interrupt_handler(device):
     device.set_mode("off")
     exit(0)
 
-def random_point():
-    import random
-    return Point(
-        pos=random.uniform(0, 250),
-        speed=random.uniform(-5, 5),
-        size=random.uniform(2, 20),
-        r=random.choice([0,1]),
-        g=random.choice([0,1]),
-        b=random.choice([0,1]),
-        w=random.choice([0,1]),
-    )
-
-def gen_frame():
-    points = [random_point() for _ in range(8)]
+def gen_sweep(layout, width=20, color=(255,0,0,0), max_loops=2):
+    count = -width
+    dir = 1
+    loops = 0
     with io.BytesIO() as output:
-        
+        while loops < max_loops:
+            for i, y in enumerate(layout):
+                pos = y*4 % (250*4)
+                output.seek(pos)
+                
+                if (count - width) < i < (count+width):
+                    r,g,b,w = color
+                else:
+                    r,g,b,w = (0,0,0,0)
+                
+                val = struct.pack(">BBBB", w, r, g, b)
+                output.write(val)
+            
+            count = count+dir
+            if count >= 250 + (width+5)  or count <= -(width+5):
+                dir = -dir
+                loops += 1
+
+
+            yield output
+    
+    
+
+
+def gen_frame(layout):
+    # points = [random_grower() for _ in range(10)]
+    points = [random_point() for _ in range(10)]
+    with io.BytesIO() as output:
         while True:
             for point in points:
                 point.update()
@@ -85,8 +129,65 @@ def gen_frame():
 
             yield output
 
-def dist(x, y):
-    return abs(x-y)
+def gen_rainbow(layout):
+    with io.BytesIO() as output:
+        offset = 0 
+        while True:
+            for x in range(len(layout)):
+                pos = layout[x]*4
+                output.seek(pos)
+                # val = rainbow_colors[(x+offset) % len(rainbow_colors)]
+                val = struct.pack(">BBBB", random.randint(0,125), *rainbow_rgb[(x+offset) % len(rainbow_rgb)])
+
+                output.write(val)
+
+            yield output
+            offset = (offset + 1) % 250
+
+def get_client():
+    d = xled.ControlInterface(ip, hw)
+    return d
+
+def main():
+    uid = "CA3BB670-E598-4F67-A328-F271C25626AC"
+    d = get_client()
+
+    led_layout = d.get_led_layout().data['coordinates']
+    el = list(enumerate(led_layout))
+    el.sort(key=lambda x: x[1]['x'])
+    l = [x[0] for x in el]
     
+
+    # signal.signal(signal.SIGINT, lambda s, f: interrupt_handler(d))
+    create_movie(d=d, frames=1000, fps=200, name="sweep", layout=l, gen=gen_sweep(l, width=30))
+    # run_movie(d, gen=gen_rainbow(l))
+    # run_movie(d, gen_frame(default_layout))
+    # run_movie(d, gen_frame(default_layout))
+    # run_movie(d, gen=gen_sweep(l))
+
+    # for frame in gen_sweep(l):
+        # print_tree(frame)
+        # time.sleep(0.01)
+
+
+
+def print_tree(frame):
+    os.system('clear')
+    for y in range(25):
+        row = ""
+        for x in range(10):
+            pos = (y*10 + x)*4
+            frame.seek(pos)
+            _,r,g,b = struct.unpack(">BBBB", frame.read(4))
+            if (r,g,b) == (0,0,0):
+                row += ". "
+                continue
+            else:
+                color = ColorRGB(r, g, b)
+                row += f"{color}# {color.OFF}"
+        print(row)
+    print("\n")
+
+
 if __name__ == "__main__":
     main()
