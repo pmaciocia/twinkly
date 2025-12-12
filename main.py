@@ -7,8 +7,10 @@ import struct
 import signal
 import uuid
 import os
+import sys
 from colorist import ColorRGB
 from points import random_point, random_grower
+import pygame as pg
 
 ip = '192.168.1.44'
 hw = 'e8:31:cd:6d:8e:7d'
@@ -159,7 +161,7 @@ def main():
     
 
     # signal.signal(signal.SIGINT, lambda s, f: interrupt_handler(d))
-    create_movie(d=d, frames=1000, fps=200, name="sweep", layout=l, gen=gen_sweep(l, width=30))
+    # create_movie(d=d, frames=1000, fps=200, name="sweep", layout=l, gen=gen_sweep(l, width=30))
     # run_movie(d, gen=gen_rainbow(l))
     # run_movie(d, gen_frame(default_layout))
     # run_movie(d, gen_frame(default_layout))
@@ -168,6 +170,9 @@ def main():
     # for frame in gen_sweep(l):
         # print_tree(frame)
         # time.sleep(0.01)
+
+    # display_tree(led_layout, gen=gen_sweep(l, width=30,max_loops=sys.maxsize))
+    display_tree(led_layout, gen=gen_rainbow(default_layout))
 
 
 
@@ -188,6 +193,48 @@ def print_tree(frame):
         print(row)
     print("\n")
 
+def display_tree(led_layout, gen):
+    pg.init()
+    w,h = 512, 512
+
+    screen = pg.display.set_mode((w, h))
+    pg.display.set_caption("pygame Stars Example")
+    screen.fill((20,20,40))
+
+    min_x, max_x = min(c['x'] for c in led_layout), max(c['x'] for c in led_layout)
+    min_y, max_y = min(c['y'] for c in led_layout), max(c['y'] for c in led_layout)
+
+    for c in led_layout:
+        c['x'] = (w-20) * ((c['x'] - min_x) / (max_x - min_x))
+        c['y'] = (h-20) * ((c['y'] - min_y) / (max_y - min_y))
+
+    clock = pg.time.Clock()
+
+    running = True
+    while running:
+        for frame in gen:
+            for ix, x in enumerate(range(250)):
+                pos = x*4
+                c = led_layout[ix]
+                frame.seek(pos)
+                _,r,g,b = struct.unpack(">BBBB", frame.read(4))
+
+                x,y = c['x'], h-c['y']
+                pg.draw.circle(screen, (r,g,b), (x,y), 5)
+
+            pg.display.update()
+            for e in pg.event.get():
+                if e.type == pg.QUIT or (e.type == pg.KEYUP and e.key == pg.K_ESCAPE):
+                    print("Exiting...")
+                    running = False
+            clock.tick(50)
+            time.sleep(0.25)
+
+            if not running:
+                break
+
+        
+    pg.quit() 
 
 if __name__ == "__main__":
     main()
