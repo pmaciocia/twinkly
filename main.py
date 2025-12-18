@@ -2,7 +2,6 @@
 import random
 import xled
 import time
-import io
 import struct
 import signal
 import uuid
@@ -11,6 +10,7 @@ import sys
 from colorist import ColorRGB
 from points import random_point, random_grower
 import pygame as pg
+import numpy as np
 
 ip = '192.168.1.44'
 hw = 'e8:31:cd:6d:8e:7d'
@@ -47,33 +47,40 @@ def create_movie(d: xled.ControlInterface, frames: int, fps: int, name: str, uid
     if gen is None:
         gen = gen_frame(default_layout)
 
-    with io.BytesIO() as output:
-        count = 0
-        frame = next(gen)
-        while frame is not None and count < frames:
-            val = frame.getvalue()
-            output.write(val)
-            count += 1
-            frame = next(gen, None)
-        
-        output.seek(0)
+    # Collect frames into a list of numpy arrays (copy each frame so
+    # generators that reuse a buffer don't corrupt previous frames).
+    frames_list = []
 
-        d.set_mode("off")
-        r = d.set_movies_new(name, uid, "rgbw_raw", 250, count, fps)
-        print(r.data)
-        r = d.set_movies_full(output)
-        print(r)
+    count = 0
+    frame = next(gen, None)
+    while frame is not None and count < frames:
+        print(f"Generating frame {count+1}/{frames}")
+        frames_list.append(frame.copy())
+        count += 1
+        frame = next(gen, None)
 
-        movies = d.get_movies().data["movies"]
-        new_movie = list((m for m in movies if m["unique_id"] == uid))[0]
-        d.set_movies_current(new_movie["id"])
-        d.set_mode("movie")
+    if count == 0:
+        return
+
+    movie_array = np.stack(frames_list)  # shape (count, 250, 4)
+
+    d.set_mode("off")
+    r = d.set_movies_new(name, uid, "rgbw_raw", 250, count, fps)
+    print(r.data)
+    # Send raw bytes to the device
+    r = d.set_movies_full(movie_array.tobytes())
+    print(r.data)
+
+    movies = d.get_movies().data["movies"]
+    new_movie = list((m for m in movies if m["unique_id"] == uid))[0]
+    d.set_movies_current(new_movie["id"])
+    d.set_mode("movie")
 
 def run_movie(d: xled.ControlInterface, gen):
     d.set_mode("rt")
 
     for frame in gen:
-        d.set_rt_frame_socket(version=3,frame=frame)
+        d.set_rt_frame_socket(version=3,frame=frame.tobytes())
         print_tree(frame)
         time.sleep(0.2)
 
@@ -88,63 +95,51 @@ def gen_sweep(layout, width=20, color=(255,0,0,0), max_loops=2):
     count = -width
     dir = 1
     loops = 0
-    with io.BytesIO() as output:
-        while loops < max_loops:
-            for i, y in enumerate(layout):
-                pos = y*4 % (250*4)
-                output.seek(pos)
-                
-                if (count - width) < i < (count+width):
-                    r,g,b,w = color
-                else:
-                    r,g,b,w = (0,0,0,0)
-                
-                val = struct.pack(">BBBB", w, r, g, b)
-                output.write(val)
+    size = len(layout)
+    lower, upper = -(width+5), size + (width+5)
+    frame = np.zeros((size,4), dtype=np.uint8)
+    while loops < max_loops:
+        for i, y in enumerate(layout):
+            dist = abs(i - count)/100.0
+            if (count-width) < i < (count+width):
+                r,g,b,w = map(lambda x: int(x * (1 - dist)), color)
+            else:
+                r,g,b,w = (0,0,0,0)
             
-            count = count+dir
-            if count >= 250 + (width+5)  or count <= -(width+5):
-                dir = -dir
-                loops += 1
+            frame[y] = [w, r, g, b]
 
+        count = count+dir
+        if  count >= upper or count <= lower:
+            loops += 1
+            dir = -dir
 
-            yield output
+        yield frame
     
     
-
-
 def gen_frame(layout):
     # points = [random_grower() for _ in range(10)]
+    frame = np.zeros((250,4), dtype=np.uint8)
     points = [random_point() for _ in range(10)]
-    with io.BytesIO() as output:
-        while True:
-            for point in points:
-                point.update()
+    while True:
+        for point in points:
+            point.update()
 
-            for iy, y in enumerate(layout):
-                pos = y*4 % (250*4)
-                output.seek(pos)
-
-                r,g,b,w = tuple(map(sum, zip(*(p.dist(iy) for p in points))))
-                val = struct.pack(">BBBB", w%255, r%255, g%255, b%255)
-                output.write(val)
-
-            yield output
+        for iy, y in enumerate(layout):
+            r,g,b,w = tuple(map(sum, zip(*(p.dist(iy) for p in points))))
+            frame[y] = [w%255, r%255, g%255, b%255]
+        yield frame
 
 def gen_rainbow(layout):
-    with io.BytesIO() as output:
-        offset = 0 
-        while True:
-            for x in range(len(layout)):
-                pos = layout[x]*4
-                output.seek(pos)
-                # val = rainbow_colors[(x+offset) % len(rainbow_colors)]
-                val = struct.pack(">BBBB", random.randint(0,125), *rainbow_rgb[(x+offset) % len(rainbow_rgb)])
+    frame = np.zeros((250,4), dtype=np.uint8)
+    offset = 0 
+    while True:
+        for x in range(len(layout)):
+            pos = layout[x]
+            r,g,b,w =  *rainbow_rgb[(x+offset) % len(rainbow_rgb)], random.randint(0,125)
+            frame[pos] = [w, r, g, b]
 
-                output.write(val)
-
-            yield output
-            offset = (offset + 1) % 250
+        yield frame
+        offset = (offset + 1) % 250
 
 def get_client():
     d = xled.ControlInterface(ip, hw)
@@ -159,21 +154,12 @@ def main():
     el.sort(key=lambda x: x[1]['x'])
     l = [x[0] for x in el]
     
+    gen = gen_sweep(l, width=100, max_loops=sys.maxsize)
 
     # signal.signal(signal.SIGINT, lambda s, f: interrupt_handler(d))
-    # create_movie(d=d, frames=1000, fps=200, name="sweep", layout=l, gen=gen_sweep(l, width=30))
-    # run_movie(d, gen=gen_rainbow(l))
-    # run_movie(d, gen_frame(default_layout))
-    # run_movie(d, gen_frame(default_layout))
-    # run_movie(d, gen=gen_sweep(l))
-
-    # for frame in gen_sweep(l):
-        # print_tree(frame)
-        # time.sleep(0.01)
-
-    # display_tree(led_layout, gen=gen_sweep(l, width=30,max_loops=sys.maxsize))
-    display_tree(led_layout, gen=gen_rainbow(default_layout))
-
+    # create_movie(d=d, frames=1000, fps=250, name="sweep", gen=gen)
+    # run_movie(d, gen=gen)
+    display_tree(led_layout, gen=gen)
 
 
 def print_tree(frame):
@@ -181,10 +167,8 @@ def print_tree(frame):
     for y in range(25):
         row = ""
         for x in range(10):
-            pos = (y*10 + x)*4
-            frame.seek(pos)
-            _,r,g,b = struct.unpack(">BBBB", frame.read(4))
-            if (r,g,b) == (0,0,0):
+            _, r, g, b = frame[x]
+            if (r, g, b) == (0, 0, 0):
                 row += ". "
                 continue
             else:
@@ -195,46 +179,101 @@ def print_tree(frame):
 
 def display_tree(led_layout, gen):
     pg.init()
-    w,h = 512, 512
+    window_w, window_h = 512, 512
+    bg = (30,30,50)
 
-    screen = pg.display.set_mode((w, h))
-    pg.display.set_caption("pygame Stars Example")
-    screen.fill((20,20,40))
+    window = pg.display.set_mode((window_w, window_h))
+    pg.display.set_caption("Twinkly Visualiser")
+    window.fill(bg)
 
-    min_x, max_x = min(c['x'] for c in led_layout), max(c['x'] for c in led_layout)
-    min_y, max_y = min(c['y'] for c in led_layout), max(c['y'] for c in led_layout)
+    layout = led_layout[:]
+    min_x, max_x = min(c['x'] for c in layout), max(c['x'] for c in layout)
+    min_y, max_y = min(c['y'] for c in layout), max(c['y'] for c in layout)
 
-    for c in led_layout:
-        c['x'] = (w-20) * ((c['x'] - min_x) / (max_x - min_x))
-        c['y'] = (h-20) * ((c['y'] - min_y) / (max_y - min_y))
+    dx = max_x - min_x or 1
+    dy = max_y - min_y or 1
+
+    for c in layout:
+        c['x'] = ((c['x'] - min_x) / dx)
+        c['y'] = ((c['y'] - min_y) / dy)
+
+    # visual parameters
+    led_radius = 6
+    pad = led_radius * 3  # padding so LEDs near edges do not get clipped
+
+    # create a drawing surface that includes padding around the normalized coordinates
+    surf_w = window_w + pad * 2
+    surf_h = window_h + pad * 2
+    surface = pg.Surface((surf_w, surf_h))
+
+    # initial view transform
+    zoom = 1.0
+
+    rect = surface.get_rect(center=window.get_rect().center)
 
     clock = pg.time.Clock()
 
     running = True
     while running:
+        sw = (surf_w - pad * 2)
+        sh = (surf_h - pad * 2)
         for frame in gen:
-            for ix, x in enumerate(range(250)):
-                pos = x*4
-                c = led_layout[ix]
-                frame.seek(pos)
-                _,r,g,b = struct.unpack(">BBBB", frame.read(4))
+            surface.fill(bg)
 
-                x,y = c['x'], h-c['y']
-                pg.draw.circle(screen, (r,g,b), (x,y), 5)
+            # draw LEDs with padding offset so the full circle can be visible at edges
+            for x in range(len(layout)):
+                c = layout[x]
+                _, r, g, b = frame[x]
 
-            pg.display.update()
+                cx = int(pad + c['x'] * sw)
+                cy = int(pad + (1 - c['y']) * sh)
+
+                # draw background halo for better visibility when colors are dark
+                if (r, g, b) == (0, 0, 0):
+                    color = (20, 20, 20)
+                else:
+                    color = (r, g, b)
+
+                pg.draw.circle(surface, color, (cx, cy), led_radius)
+
+            # scale the surface according to current zoom and blit using the rect for panning
+            scaled_size = (max(1, int(surf_w * zoom)), max(1, int(surf_h * zoom)))
+            scaled_win = pg.transform.scale(surface, scaled_size)
+
+            # preserve the current center when zooming
+            prev_center = rect.center
+            rect = scaled_win.get_rect()
+            rect.center = prev_center
+
+            window.fill(bg)
+            window.blit(scaled_win, rect)
+            pg.display.flip()
+
             for e in pg.event.get():
                 if e.type == pg.QUIT or (e.type == pg.KEYUP and e.key == pg.K_ESCAPE):
                     print("Exiting...")
                     running = False
-            clock.tick(50)
-            time.sleep(0.25)
+                elif e.type == pg.KEYUP:
+                    # zoom in/out with + and -
+                    if e.key == pg.K_EQUALS or e.key == pg.K_PLUS:
+                        zoom *= 1.1
+                    elif e.key == pg.K_MINUS or e.key == pg.K_UNDERSCORE:
+                        zoom *= 0.9
+
+                    # panning with arrow keys
+                    elif e.key == pg.K_LEFT:
+                        rect.x += 20
+                    elif e.key == pg.K_RIGHT:
+                        rect.x -= 20
+                    elif e.key == pg.K_UP:
+                        rect.y += 20
+                    elif e.key == pg.K_DOWN:
+                        rect.y -= 20
+
+            clock.tick(500)
 
             if not running:
                 break
-
-        
-    pg.quit() 
 
 if __name__ == "__main__":
     main()

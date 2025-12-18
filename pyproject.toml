@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "colorist>=1.8.8",
+    "numpy>=2.3.5",
     "pygame>=2.6.1",
     "urllib3>=2.6.1",
     "xled>=0.7.0",
