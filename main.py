@@ -1,35 +1,27 @@
 
-import random
 import xled
 import time
-import signal
 import uuid
-import sys
 import numpy as np
+import random
+from io import BytesIO
 
 from display import display_tree, print_tree
-from points import random_grower, random_point
-from gen import gen_frame, gen_sweep, gen_rainbow
+from gen import gen_frame, gen_sweep, gen_rainbow, gen_sweep_2, gen_perlin_rainbow, random_xmas_tree
 
 ip = '192.168.1.44'
 hw = 'e8:31:cd:6d:8e:7d'
 default_layout = list(range(125, 250)) + list(range(124,-1,-1))
 
-def create_movie(d: xled.ControlInterface, frames: int, fps: int, name: str, uid: str = None, gen = None):
-    if uid is None:
-        uid = str(uuid.uuid4()).upper()
-
+def create_movie(frames: int, gen = None):
     if gen is None:
         gen = gen_frame(default_layout)
 
-    # Collect frames into a list of numpy arrays (copy each frame so
-    # generators that reuse a buffer don't corrupt previous frames).
     frames_list = []
 
     count = 0
     frame = next(gen, None)
     while frame is not None and count < frames:
-        print(f"Generating frame {count+1}/{frames}")
         frames_list.append(frame.copy())
         count += 1
         frame = next(gen, None)
@@ -37,10 +29,16 @@ def create_movie(d: xled.ControlInterface, frames: int, fps: int, name: str, uid
     if count == 0:
         return
 
-    movie_array = np.stack(frames_list)  # shape (count, 250, 4)
+    return np.stack(frames_list)  # shape (count, 250, 4)
 
-    d.set_mode("off")
-    r = d.set_movies_new(name, uid, "rgbw_raw", 250, count, fps)
+def upload_movie(d: xled.ControlInterface, name: str, movie_array: np.ndarray, fps: int):
+    uid = str(uuid.uuid4()).upper()
+
+    frames = movie_array.shape[0]
+    leds = movie_array.shape[1]
+    r = d.set_mode("off")
+    print(r.data)
+    r = d.set_movies_new(name, uid, "rgbw_raw", leds, frames, fps)
     print(r.data)
     # Send raw bytes to the device
     r = d.set_movies_full(movie_array.tobytes())
@@ -54,10 +52,13 @@ def create_movie(d: xled.ControlInterface, frames: int, fps: int, name: str, uid
 def run_movie(d: xled.ControlInterface, gen):
     d.set_mode("rt")
 
+    c = 0 
     for frame in gen:
-        d.set_rt_frame_socket(version=3,frame=frame.tobytes())
-        print_tree(frame)
-        time.sleep(0.2)
+        b = BytesIO(frame.tobytes())
+        d.set_rt_frame_socket(version=3,frame=b)
+        time.sleep(0.02)
+        c += 1
+        print(c)
 
     d.set_mode("off")
 
@@ -69,6 +70,10 @@ def interrupt_handler(device):
 def get_client():
     d = xled.ControlInterface(ip, hw)
     return d
+
+def find_client():
+    dis = xled.discover.discover()
+    return xled.ControlInterface(host=dis.ip_address, hw_address=dis.hw_address)
 
 def sort_layout(led_layout, axis='x'):
     """Sort LED layout by specified axis (x, y, or z)"""
@@ -91,22 +96,49 @@ def sort_by_plane(led_layout, normal=(0, 0, 1), point=(0, 0, 0)):
 
 def main():
     uid = "CA3BB670-E598-4F67-A328-F271C25626AC"
-    d = get_client()
+    
+    # d = find_client()
+    # led_layout = d.get_led_layout().data['coordinates']
 
+    led_layout = random_xmas_tree()
+        
 
-    led_layout = d.get_led_layout().data['coordinates']
     
     # normal = (random.uniform(-1,1), random.uniform(-1,1), random.uniform(-1,1))
-    # l = sort_by_plane(led_layout, normal=normal, point=(0, 0, 0))
-    l = sort_layout(led_layout, axis='x')
+    l = sort_by_plane(led_layout, normal=(0, 1, 0), point=(0, 0, 0))
+    # l = sort_layout(led_layout, axis='x')
+    # l = default_layout[:]
+    # random.shuffle(l)
+    # l = random.shuffle(default_layout[:])
     
-    gen = gen_sweep(l, width=100, max_loops=sys.maxsize)
+    # gen = gen_sweep_2(led_layout, width=50, max_loops=sys.maxsize, axis=0)
+    # gen = gen_perlin_rainbow(l, scale=0.05)
+
+    gen = gen_sweep(sort_by_plane(led_layout, normal=(0,1,0), point=(0,0,0)), width=30, max_loops=2)
+    movie_a = create_movie(frames=632, gen=gen)
+
+    gen = gen_sweep(sort_by_plane(led_layout, normal=(1,0,0), point=(0,0,0)), width=30, max_loops=2)
+    movie_b = create_movie(frames=632, gen=gen)
+
+    # movie = np.concatenate((movie_a, movie_b), axis=0)
+    movie = np.maximum(movie_a, movie_b)
+
+    # upload_movie(d=d, name="sweep", movie_array=movie, fps=100)
 
     # signal.signal(signal.SIGINT, lambda s, f: interrupt_handler(d))
-    # create_movie(d=d, frames=1000, fps=250, name="sweep", gen=gen)
-    # run_movie(d, gen=gen)
-    display_tree(led_layout[:], gen=gen)
+    # upload_movie(d=d, name="sweep", movie_array=create_movie(frames=1000, gen=gen), fps=250)
+    # run_movie(d, gen=movie)
+    display_tree(led_layout[:], gen=movie, fps=250)
+    # display_tree(led_layout[:], gen=limit_gen(movie, 1264), fps=250)
 
+
+def limit_gen(gen, max_frames):
+    count = 0
+    for frame in gen:
+        if count >= max_frames:
+            break
+        yield frame
+        count += 1
 
 if __name__ == "__main__":
     main()

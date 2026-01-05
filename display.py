@@ -3,7 +3,8 @@ import os
 import pygame as pg
 
 
-def display_tree(layout, gen):
+
+def display_tree(layout, gen, fps=100):
     pg.init()
     window_w, window_h = 512, 512
     bg = (30,30,50)
@@ -35,13 +36,18 @@ def display_tree(layout, gen):
     zoom = 1.0
 
     rect = surface.get_rect(center=window.get_rect().center)
+    font = pg.font.SysFont("Arial", 16)
+    
 
     clock = pg.time.Clock()
+    frame_count = 0
+
 
     running = True
+    sw = (surf_w - pad * 2)
+    sh = (surf_h - pad * 2)
     while running:
-        sw = (surf_w - pad * 2)
-        sh = (surf_h - pad * 2)
+        running, zoom = check_events(rect, zoom)
         for frame in gen:
             surface.fill(bg)
 
@@ -72,33 +78,40 @@ def display_tree(layout, gen):
 
             window.fill(bg)
             window.blit(scaled_win, rect)
+            count_surface = font.render(f"Frame: {frame_count}", True, (200,200,200))
+            frame_count += 1
+            window.blit(count_surface, (0, 0))
             pg.display.flip()
 
-            for e in pg.event.get():
-                if e.type == pg.QUIT or (e.type == pg.KEYUP and e.key == pg.K_ESCAPE):
-                    print("Exiting...")
-                    running = False
-                elif e.type == pg.KEYUP:
-                    # zoom in/out with + and -
-                    if e.key == pg.K_EQUALS or e.key == pg.K_PLUS:
-                        zoom *= 1.1
-                    elif e.key == pg.K_MINUS or e.key == pg.K_UNDERSCORE:
-                        zoom *= 0.9
-
-                    # panning with arrow keys
-                    elif e.key == pg.K_LEFT:
-                        rect.x += 20
-                    elif e.key == pg.K_RIGHT:
-                        rect.x -= 20
-                    elif e.key == pg.K_UP:
-                        rect.y += 20
-                    elif e.key == pg.K_DOWN:
-                        rect.y -= 20
-
-            clock.tick(100)
+            running, zoom = check_events(rect, zoom)
+            clock.tick(fps)
 
             if not running:
                 break
+
+def check_events(rect, zoom):
+    running = True
+    for e in pg.event.get():
+        if e.type == pg.QUIT or (e.type == pg.KEYUP and e.key == pg.K_ESCAPE):
+            print("Exiting...")
+            running = False
+        elif e.type == pg.KEYUP:
+                    # zoom in/out with + and -
+            if e.key == pg.K_EQUALS or e.key == pg.K_PLUS:
+                zoom *= 1.1
+            elif e.key == pg.K_MINUS or e.key == pg.K_UNDERSCORE:
+                zoom *= 0.9
+
+                    # panning with arrow keys
+            elif e.key == pg.K_LEFT:
+                rect.x += 20
+            elif e.key == pg.K_RIGHT:
+                rect.x -= 20
+            elif e.key == pg.K_UP:
+                rect.y += 20
+            elif e.key == pg.K_DOWN:
+                rect.y -= 20
+    return (running, zoom)
 
 
 def print_tree(frame):
